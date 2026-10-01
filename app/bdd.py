@@ -175,3 +175,50 @@ class Manager:
             var, low, high = self.nodes[u]
             u = high if assignment[self.variables[var]] else low
         return u == TRUE
+
+    def cofactor(self, root: int, var_level: int, high: bool, memo: dict | None = None) -> int:
+        """root 关于第 var_level 层变量取定值（high=True 取高分支）的共因子。
+
+        结果经 ``mk`` 规范化；被约束变量不出现在 root 中时原样返回。
+        """
+        own_memo = memo is None
+        if own_memo:
+            memo = {}
+
+        def rec(u: int) -> int:
+            if u <= TRUE:
+                return u
+            var, low, hi = self.nodes[u]
+            if var > var_level:
+                return u
+            if var == var_level:
+                return hi if high else low
+            key = (u, high)
+            hit = memo.get(key)
+            if hit is not None:
+                return hit
+            result = self.mk(var, rec(low), rec(hi))
+            memo[key] = result
+            return result
+
+        return rec(root)
+
+    def first_assignment_by_priority(self, root: int, priority: list[int]) -> dict[str, bool] | None:
+        """按给定变量层优先级求字典序最小满足赋值（每层优先取假）。
+
+        与变量在 BDD 中的物理层顺序无关：逐步对当前函数取“假”共因子，
+        仍可满足则取假，否则取真。全程为 BDD 共因子操作，不枚举赋值。
+        root 为常量假时返回 None。
+        """
+        if root == FALSE:
+            return None
+        assignment = {name: False for name in self.variables}
+        node = root
+        for var_level in priority:
+            low_node = self.cofactor(node, var_level, False)
+            if low_node != FALSE:
+                node = low_node
+            else:
+                node = self.cofactor(node, var_level, True)
+                assignment[self.variables[var_level]] = True
+        return assignment

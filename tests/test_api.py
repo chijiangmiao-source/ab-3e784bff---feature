@@ -77,6 +77,59 @@ class ApiTest(unittest.TestCase):
         self.assertFalse(data["ok"])
         self.assertEqual(data["errors"][0]["kind"], "unknown_variable")
 
+    def test_monotonicity_pass(self):
+        status, data = self.post(
+            "/api/monotonicity",
+            {
+                "variables": ["armed"],
+                "rules": [
+                    {"id": "R1", "action": "hold", "condition": "!armed"},
+                    {"id": "R2", "action": "alarm", "condition": "armed"},
+                ],
+                "directions": {"armed": "high"},
+                "levels": {"hold": 1, "alarm": 2},
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["monotonicity"], "PASS")
+        self.assertEqual(data["ordered_pairs"], 3)
+        self.assertEqual(data["violating_pairs"], 0)
+        self.assertEqual([c["action"] for c in data["coverage"]], ["hold", "alarm"])
+
+    def test_monotonicity_counterexample_is_422_on_bad_config(self):
+        # 等级倒置本身返回 200 + FAIL；此处配置还缺方向/多动作重复，返回 422。
+        status, data = self.post(
+            "/api/monotonicity",
+            {
+                "variables": ["armed"],
+                "rules": [
+                    {"id": "R1", "action": "hold", "condition": "!armed"},
+                    {"id": "R2", "action": "alarm", "condition": "armed"},
+                ],
+                "directions": {},
+                "levels": {"hold": 1, "alarm": 1, "ghost": 4},
+            },
+        )
+        self.assertEqual(status, 422)
+        kinds = {e["kind"] for e in data["errors"]}
+        self.assertIn("missing_variable_direction", kinds)
+        self.assertIn("duplicate_level", kinds)
+        self.assertIn("unknown_action", kinds)
+
+    def test_monotonicity_rejects_unfrozen_coverage(self):
+        status, data = self.post(
+            "/api/monotonicity",
+            {
+                "variables": ["armed"],
+                "rules": [{"id": "R1", "action": "hold", "condition": "armed"}],
+                "directions": {"armed": "high"},
+                "levels": {"hold": 1},
+            },
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(data["errors"][0]["kind"], "coverage_incomplete")
+
     def test_bad_json_is_400(self):
         req = urllib.request.Request(
             self.base + "/api/audit", data=b"{not json", method="POST",

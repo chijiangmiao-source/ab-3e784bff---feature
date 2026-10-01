@@ -16,15 +16,17 @@
   main { display: flex; gap: 18px; padding: 18px 22px; align-items: flex-start; flex-wrap: wrap; }
   section { background: #151d31; border: 1px solid #263154; border-radius: 8px; padding: 16px; }
   #editor { flex: 1 1 460px; min-width: 380px; }
-  #result-panel { flex: 1 1 460px; min-width: 380px; }
+  #result-panel, #mono-panel { flex: 1 1 520px; min-width: 420px; }
   h2 { font-size: 13px; color: #9fb4e8; margin: 0 0 10px; letter-spacing: 1px; }
+  h3 { font-size: 12px; color: #8fa3d8; margin: 12px 0 6px; letter-spacing: 1px; }
   textarea { width: 100%; background: #0d1322; color: #cfe0ff; border: 1px solid #2a3558;
              border-radius: 6px; padding: 8px; font: inherit; font-size: 13px; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { border: 1px solid #263154; padding: 5px 7px; text-align: left; }
   th { color: #8fa3d8; font-weight: normal; background: #10182b; }
-  input[type=text] { width: 100%; background: #0d1322; color: #cfe0ff; border: 1px solid #2a3558;
-                     border-radius: 4px; padding: 5px 6px; font: inherit; font-size: 13px; }
+  input[type=text], input[type=number], select { width: 100%; background: #0d1322; color: #cfe0ff;
+                     border: 1px solid #2a3558; border-radius: 4px; padding: 5px 6px;
+                     font: inherit; font-size: 13px; }
   button { background: #23407a; color: #dce8ff; border: 1px solid #3a5da8; border-radius: 6px;
            padding: 7px 14px; font: inherit; font-size: 13px; cursor: pointer; }
   button:hover { background: #2c5099; }
@@ -42,12 +44,17 @@
   .cleared { color: #e8c06a; }
   .empty { color: #5d6c96; font-size: 13px; }
   code { color: #8fd3ff; }
+  .sides { display: flex; gap: 10px; flex-wrap: wrap; }
+  .side { flex: 1 1 220px; background: #10182b; border: 1px solid #263154; border-radius: 6px; padding: 8px 10px; }
+  .side .tag { font-size: 12px; color: #9fb4e8; }
+  .lvl { display: inline-block; background: #233255; border: 1px solid #3a4f86; border-radius: 4px;
+         padding: 1px 7px; color: #cfe0ff; }
 </style>
 </head>
 <body>
 <header>
   <h1>姿态保护控制器 · 规则审计台</h1>
-  <span>至多 64 个变量 / 96 条规则 · 按变量标识 ASCII 顺序对全赋值空间精确裁决空洞与重叠</span>
+  <span>至多 64 个变量 / 96 条规则 · ASCII 变量序 ROBDD 全赋值空间精确裁决：空洞/重叠 + 危险偏序单调复核</span>
 </header>
 <main>
   <section id="editor">
@@ -63,23 +70,49 @@
       <button class="ghost" id="ex-safe" type="button">示例：safe / !safe</button>
       <button class="ghost" id="ex-armed" type="button">示例：仅 armed</button>
       <button class="ghost" id="ex-overlap" type="button">示例：动作重叠</button>
+      <button class="ghost" id="ex-mono-pass" type="button">示例：单调复核通过</button>
+      <button class="ghost" id="ex-mono-fail" type="button">示例：等级倒置反例</button>
     </div>
     <div class="row-actions">
-      <button id="submit" type="button">提交审计（冻结结论）</button>
+      <button id="submit" type="button">提交覆盖审计（冻结结论）</button>
     </div>
-    <div class="frozen-note" id="freeze-note">提交后结论冻结；修改任一草稿即清除旧证据。</div>
+    <h2 style="margin-top:16px">三、危险方向与保护等级</h2>
+    <div class="row-actions" style="margin:6px 0">
+      <button class="ghost" id="gen-config" type="button">按当前变量/动作生成配置表</button>
+    </div>
+    <h3>每个已声明遥测变量的危险方向</h3>
+    <table id="dir-table">
+      <thead><tr><th style="width:40%">变量</th><th>真值更危险（high）/ 假值更危险（low）</th></tr></thead>
+      <tbody id="dir-body"><tr><td colspan="2" class="empty">尚未生成：先在上方录入变量与规则，再点击“生成配置表”。</td></tr></tbody>
+    </table>
+    <h3>每个现有动作的保护等级（1 最低，须连续唯一）</h3>
+    <table id="lvl-table">
+      <thead><tr><th style="width:40%">动作</th><th>等级（由低到高）</th></tr></thead>
+      <tbody id="lvl-body"></tbody>
+    </table>
+    <div class="row-actions">
+      <button id="submit-mono" type="button">提交危险偏序单调复核（冻结结论）</button>
+    </div>
+    <div class="frozen-note" id="freeze-note">提交后结论冻结；修改规则草稿、危险方向或等级配置即清除旧证据，旧结论不得继续使用。</div>
   </section>
   <section id="result-panel">
-    <h2>三、审计结论</h2>
+    <h2>四、覆盖审计结论（空洞 / 重叠）</h2>
     <div id="result"><span class="empty">尚未提交审计。</span></div>
+  </section>
+  <section id="mono-panel">
+    <h2>五、危险偏序单调复核结论</h2>
+    <div id="mono-result"><span class="empty">尚未提交单调复核。仅接受无空洞、无不同动作重叠的冻结结论。</span></div>
   </section>
 </main>
 <script>
 "use strict";
 const rulesBody = document.getElementById("rules-body");
 const resultBox = document.getElementById("result");
-const freezeNote = document.getElementById("freeze-note");
+const monoBox = document.getElementById("mono-result");
+const dirBody = document.getElementById("dir-body");
+const lvlBody = document.getElementById("lvl-body");
 let frozen = false;
+let monoFrozen = false;
 
 function addRule(id, action, condition) {
   const tr = document.createElement("tr");
@@ -95,29 +128,27 @@ function addRule(id, action, condition) {
   rulesBody.appendChild(tr);
 }
 
-function draftChanged() {
+function clearAudit(reason) {
   if (frozen) {
-    resultBox.innerHTML = '<span class="empty cleared">草稿已修改，旧审计证据已清除。</span>';
+    resultBox.innerHTML = `<span class="empty cleared">${reason}</span>`;
     frozen = false;
   }
 }
-
-document.getElementById("editor").addEventListener("input", draftChanged);
-document.getElementById("add-rule").addEventListener("click", () => { addRule(); draftChanged(); });
-
-function loadExample(vars, rules) {
-  document.getElementById("variables").value = vars.join("\n");
-  rulesBody.innerHTML = "";
-  rules.forEach(r => addRule(r[0], r[1], r[2]));
-  draftChanged();
+function clearMono(reason) {
+  if (monoFrozen) {
+    monoBox.innerHTML = `<span class="empty cleared">${reason}</span>`;
+    monoFrozen = false;
+  }
 }
-document.getElementById("ex-safe").addEventListener("click", () =>
-  loadExample(["safe"], [["R1", "hold", "safe"], ["R2", "alarm", "!safe"]]));
-document.getElementById("ex-armed").addEventListener("click", () =>
-  loadExample(["armed"], [["R1", "hold", "armed"]]));
-document.getElementById("ex-overlap").addEventListener("click", () =>
-  loadExample(["armed", "safe"],
-    [["R2", "alarm", "safe"], ["R1", "hold", "safe | armed"], ["R3", "hold", "!safe & !armed"]]));
+function draftChanged() {
+  // 规则草稿变更同时使覆盖结论与单调结论过期（单调结论依赖规则与冻结覆盖）。
+  clearAudit("草稿已修改，旧审计证据已清除。");
+  clearMono("规则草稿已修改，旧单调性结论立即失效，过期证据已清除。");
+}
+
+document.getElementById("variables").addEventListener("input", draftChanged);
+document.getElementById("add-rule").addEventListener("click", () => { addRule(); draftChanged(); });
+document.getElementById("rules-table").addEventListener("input", draftChanged);
 
 function parseVariables() {
   return document.getElementById("variables").value.split(/[\s,]+/).filter(Boolean);
@@ -129,6 +160,85 @@ function parseRules() {
     condition: tr.querySelector(".r-cond").value.trim()
   }));
 }
+
+function loadExample(vars, rules, presetDirs, presetLevels) {
+  document.getElementById("variables").value = vars.join("\n");
+  rulesBody.innerHTML = "";
+  rules.forEach(r => addRule(r[0], r[1], r[2]));
+  buildConfig(presetDirs || {}, presetLevels || {});
+  draftChanged();
+}
+document.getElementById("ex-safe").addEventListener("click", () => {
+  loadExample(["safe"], [["R1", "hold", "safe"], ["R2", "alarm", "!safe"]]);
+});
+document.getElementById("ex-armed").addEventListener("click", () => {
+  loadExample(["armed"], [["R1", "hold", "armed"]]);
+});
+document.getElementById("ex-overlap").addEventListener("click", () => {
+  loadExample(["armed", "safe"],
+    [["R2", "alarm", "safe"], ["R1", "hold", "safe | armed"], ["R3", "hold", "!safe & !armed"]]);
+});
+document.getElementById("ex-mono-pass").addEventListener("click", () => {
+  loadExample(
+    ["armed", "safe"],
+    [["R1", "hold", "!armed"], ["R2", "alarm", "armed"]],
+    {armed: "high", safe: "low"}, {hold: 1, alarm: 2});
+});
+document.getElementById("ex-mono-fail").addEventListener("click", () => {
+  loadExample(
+    ["armed", "safe"],
+    [["R1", "hold", "!armed"], ["R2", "alarm", "armed"]],
+    {armed: "high", safe: "low"}, {hold: 2, alarm: 1});
+});
+
+// --------------------------------------------------------- 方向/等级配置表
+function readConfig() {
+  const dirs = {};
+  dirBody.querySelectorAll("tr[data-var]").forEach(tr => {
+    dirs[tr.dataset.var] = tr.querySelector("select").value;
+  });
+  const levels = {};
+  lvlBody.querySelectorAll("tr[data-action]").forEach(tr => {
+    const raw = tr.querySelector("input").value.trim();
+    if (raw !== "") levels[tr.dataset.action] = Number(raw);
+  });
+  return {dirs, levels};
+}
+
+function buildConfig(presetDirs, presetLevels) {
+  // 保留草稿中已填写的方向/等级，再叠加示例预置值。
+  const prev = readConfig();
+  const dirs = Object.assign({}, prev.dirs, presetDirs || {});
+  const levels = Object.assign({}, prev.levels, presetLevels || {});
+  const variables = parseVariables();
+  const actions = [...new Set(parseRules().map(r => r.action).filter(Boolean))];
+
+  if (variables.length === 0) {
+    dirBody.innerHTML = '<tr><td colspan="2" class="empty">草稿中没有变量。</td></tr>';
+  } else {
+    dirBody.innerHTML = variables.map(v => {
+      const d = dirs[v] === "low" ? "low" : (dirs[v] === "high" ? "high" : "high");
+      return `<tr data-var="${esc(v)}"><td><code>${esc(v)}</code></td>` +
+             `<td><select><option value="high"${d === "high" ? " selected" : ""}>真值更危险（true 更危险）</option>` +
+             `<option value="low"${d === "low" ? " selected" : ""}>假值更危险（false 更危险）</option></select></td></tr>`;
+    }).join("");
+  }
+  lvlBody.innerHTML = actions.length === 0
+    ? '<tr><td colspan="2" class="empty">草稿中没有动作。</td></tr>'
+    : actions.map((a, i) => {
+        const lv = levels[a] !== undefined ? levels[a] : (i + 1);
+        return `<tr data-action="${esc(a)}"><td><code>${esc(a)}</code></td>` +
+               `<td><input type="number" min="1" step="1" value="${esc(String(lv))}"></td></tr>`;
+      }).join("");
+  dirBody.querySelectorAll("select").forEach(s => s.addEventListener("change", configChanged));
+  lvlBody.querySelectorAll("input").forEach(s => s.addEventListener("input", configChanged));
+}
+function configChanged() {
+  clearMono("危险方向或等级配置已修改，旧单调性结论立即失效，过期证据已清除。");
+}
+document.getElementById("gen-config").addEventListener("click", () => buildConfig({}, {}));
+
+// ---------------------------------------------------------------- 渲染
 function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
@@ -153,15 +263,52 @@ function render(data) {
   resultBox.innerHTML =
     `<span class="verdict ${data.verdict}">${data.verdict === "PASS" ? "✔ 通过" : "✘ 未通过"}</span>` +
     `<div class="conclusion">${esc(data.conclusion)}</div>` +
-    `<h2 style="margin-top:14px">空洞（未命中任何规则的赋值）</h2>` +
+    `<h3>空洞（未命中任何规则的赋值）</h3>` +
     `<table><tr><th>精确个数</th><th>首个空洞（ASCII 变量序，假先于真）</th></tr>` +
     `<tr><td>${holes.count_text}</td><td>${fmtAssign(holes.first)}</td></tr></table>` +
-    `<h2 style="margin-top:14px">重叠（多动作同时命中）</h2>` +
+    `<h3>重叠（多动作同时命中）</h3>` +
     `<table><tr><th>精确个数</th><th>首个赋值</th><th>命中规则（按标识排序）</th></tr>` +
     `<tr><td>${ov.count_text}</td><td>${fmtAssign(ov.first)}</td><td>${ov.rules.map(esc).join(", ") || "—"}</td></tr></table>` +
-    `<h2 style="margin-top:14px">各规则规范节点摘要（ASCII 变量序 ROBDD）</h2>` +
+    `<h3>各规则规范节点摘要（ASCII 变量序 ROBDD）</h3>` +
     `<table><tr><th>标识</th><th>动作</th><th>引用变量</th><th>规范节点数</th><th>根节点号</th></tr>${ruleRows}</table>` +
     `<div class="frozen-note">变量顺序：${data.variable_order.map(v => `<code>${esc(v)}</code>`).join(" &lt; ")} · 赋值空间 2^${data.variable_order.length} = ${data.space_text}</div>`;
+  buildConfig({}, {});
+}
+
+function renderMono(data) {
+  monoFrozen = true;
+  if (!data.ok) {
+    const items = data.errors.map(e =>
+      `<li><span class="kind">[${esc(e.kind)}]</span> ${esc(e.rule ? "规则 " + e.rule + "：" : "")}${esc(e.message)}</li>`
+    ).join("");
+    monoBox.innerHTML = `<div class="errors"><b>复核被拒绝（共 ${data.errors.length} 处）：</b><ul>${items}</ul></div>`;
+    return;
+  }
+  const head =
+    `<span class="verdict ${data.monotonicity}">${data.monotonicity === "PASS" ? "✔ 单调通过" : "✘ 存在降级反例"}</span>` +
+    `<div class="conclusion">${esc(data.conclusion)}</div>` +
+    `<div class="frozen-note">已精确检验偏序赋值对 <b>${data.ordered_pairs_text}</b>（3^${data.variable_order.length}）· ` +
+    `降级对 <b>${data.violating_pairs_text}</b> · 关系 ROBDD 采用交错变量序（低₀,高₀,低₁,高₁,…），首解按 α 再 β 优先级共因子求出</div>`;
+  if (data.monotonicity === "FAIL") {
+    const ce = data.counterexample;
+    const sideHtml = (s, tag) =>
+      `<div class="side"><div class="tag">${tag}</div>` +
+      `<div style="margin:6px 0">${fmtAssign(s.assignment)}</div>` +
+      `<div>动作 <code>${esc(s.action)}</code> · 等级 <span class="lvl">${s.level}</span></div>` +
+      `<div class="frozen-note">命中规则（按标识排序）：${s.rules.map(r => `<code>${esc(r)}</code>`).join(", ")}</div></div>`;
+    monoBox.innerHTML = head +
+      `<h3>首个反例（先按低危险赋值、再按高危险赋值，假先于真的稳定字典序）</h3>` +
+      `<div class="sides">${sideHtml(ce.less_dangerous, "低危险赋值 α")}${sideHtml(ce.more_dangerous, "更危险赋值 β（α ≤d β）")}</div>` +
+      `<div class="frozen-note">等级 ${ce.less_dangerous.level} → ${ce.more_dangerous.level}：危险程度上升，裁决反被降级。</div>`;
+    return;
+  }
+  const rows = data.coverage.map(c =>
+    `<tr><td>${c.level}</td><td><code>${esc(c.action)}</code></td>` +
+    `<td>${c.rules.map(r => `<code>${esc(r)}</code>`).join(", ")}</td>` +
+    `<td>${c.assignments_text}</td><td>${c.nodes}</td><td>${fmtAssign(c.first)}</td></tr>`).join("");
+  monoBox.innerHTML = head +
+    `<h3>各动作等级的规范覆盖摘要</h3>` +
+    `<table><tr><th>等级</th><th>动作</th><th>规则</th><th>命中赋值数</th><th>规范节点数</th><th>首个命中赋值</th></tr>${rows}</table>`;
 }
 
 document.getElementById("submit").addEventListener("click", async () => {
@@ -174,7 +321,27 @@ document.getElementById("submit").addEventListener("click", async () => {
     });
     render(await resp.json());
   } catch (err) {
+    frozen = false;
     resultBox.innerHTML = `<div class="errors">请求失败：${esc(err.message)}</div>`;
+  }
+});
+
+document.getElementById("submit-mono").addEventListener("click", async () => {
+  monoBox.innerHTML = '<span class="empty">复核中…</span>';
+  try {
+    const {dirs, levels} = readConfig();
+    const resp = await fetch("/api/monotonicity", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        variables: parseVariables(), rules: parseRules(),
+        directions: dirs, levels: levels
+      })
+    });
+    renderMono(await resp.json());
+  } catch (err) {
+    monoFrozen = false;
+    monoBox.innerHTML = `<div class="errors">请求失败：${esc(err.message)}</div>`;
   }
 });
 

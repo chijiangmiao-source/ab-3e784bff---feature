@@ -4,7 +4,9 @@
 步骤：构建检查（字节码编译）→ 代码测试（单元测试）→ 页面与健康路径的
 HTTP 冒烟 → 围绕决策表边界的 API 验收（64 变量 / 96 规则上限、
 safe 与 !safe 无空洞无重叠、仅 armed 的首个空洞、不同动作重叠的首个
-赋值与按标识排序的命中规则、单遍错误定位、2^64 空间精确裁决）。
+赋值与按标识排序的命中规则、单遍错误定位、2^64 空间精确裁决）→
+危险偏序单调复核验收（通过摘要、降级反例双侧命中、配置错误拒绝、
+3^64 偏序对非枚举精确检验）。
 """
 from __future__ import annotations
 
@@ -107,7 +109,13 @@ def step_http_smoke() -> bool:
         ok = False
     try:
         status, body = http_get("/")
-        good = status == 200 and "姿态保护控制器" in body and "/api/audit" in body
+        good = (
+            status == 200
+            and "姿态保护控制器" in body
+            and "/api/audit" in body
+            and "/api/monotonicity" in body
+            and "危险偏序" in body
+        )
         record("HTTP 冒烟：GET / 审计页面", good, f"status={status} bytes={len(body)}")
         ok = ok and good
     except Exception as exc:
@@ -215,6 +223,20 @@ def case_rule_limit() -> bool:
     return check("验收：规则上限 96 通过 / 97 拒绝", good)
 
 
+def http_monotonicity(payload: dict):
+    req = urllib.request.Request(
+        WEB_URL + "/api/monotonicity",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
 def case_exact_full_space() -> bool:
     variables = [f"v{i:02d}" for i in range(64)]
     rules = []
@@ -233,6 +255,113 @@ def case_exact_full_space() -> bool:
                  f"verdict={data.get('verdict')} space={data.get('space')}")
 
 
+# ----------------------------------------------------- 危险偏序单调复核验收
+def case_monotonicity_pass() -> bool:
+    status, data = http_monotonicity({
+        "variables": ["armed", "safe"],
+        "rules": [rule("R1", "hold", "!armed"), rule("R2", "alarm", "armed")],
+        "directions": {"armed": "high", "safe": "low"},
+        "levels": {"hold": 1, "alarm": 2},
+    })
+    good = (
+        status == 200 and data.get("ok") and data.get("monotonicity") == "PASS"
+        and data.get("ordered_pairs") == 9 and data.get("violating_pairs") == 0
+        and data.get("counterexample") is None
+        and [c["action"] for c in data.get("coverage", [])] == ["hold", "alarm"]
+        and [c["level"] for c in data.get("coverage", [])] == [1, 2]
+        and sum(c["assignments"] for c in data.get("coverage", [])) == 4
+    )
+    return check("验收：单调复核通过并给出每动作等级规范覆盖摘要", good,
+                 f"verdict={data.get('monotonicity')} pairs={data.get('ordered_pairs')} "
+                 f"violating={data.get('violating_pairs')}")
+
+
+def case_monotonicity_counterexample() -> bool:
+    status, data = http_monotonicity({
+        "variables": ["armed", "safe"],
+        "rules": [rule("R1", "hold", "!armed"), rule("R2", "alarm", "armed")],
+        "directions": {"armed": "high", "safe": "low"},
+        "levels": {"hold": 2, "alarm": 1},
+    })
+    ce = data.get("counterexample") or {}
+    less, more = ce.get("less_dangerous") or {}, ce.get("more_dangerous") or {}
+    good = (
+        status == 200 and data.get("ok") and data.get("monotonicity") == "FAIL"
+        and data.get("violating_pairs") == 3
+        and less.get("assignment") == {"armed": False, "safe": False}
+        and less.get("action") == "hold" and less.get("level") == 2
+        and less.get("rules") == ["R1"]
+        and more.get("assignment") == {"armed": True, "safe": False}
+        and more.get("action") == "alarm" and more.get("level") == 1
+        and more.get("rules") == ["R2"]
+    )
+    return check("验收：等级倒置稳定返回首个反例（先 α 后 β）及双侧命中规则/动作/等级", good,
+                 f"violating={data.get('violating_pairs')} "
+                 f"α={less.get('assignment')}->{less.get('action')}@{less.get('level')} "
+                 f"β={more.get('assignment')}->{more.get('action')}@{more.get('level')}")
+
+
+def case_monotonicity_config_errors() -> bool:
+    status, data = http_monotonicity({
+        "variables": ["a", "b"],
+        "rules": [rule("R1", "hold", "!a"), rule("R2", "alarm", "a")],
+        "directions": {"a": "sideways", "ghost": "high"},  # 非法值 + 未知变量 + b 遗漏
+        "levels": {"hold": 2, "alarm": 2, "ghost": 0},     # 重复 + 未知动作
+    })
+    kinds = {e.get("kind") for e in data.get("errors", [])}
+    expected = {
+        "invalid_direction", "unknown_variable", "missing_variable_direction",
+        "duplicate_level", "unknown_action",
+    }
+    good = status == 422 and not data.get("ok") and expected <= kinds
+    return check("验收：方向遗漏/非法、未知动作、等级重复一次定位并拒绝", good,
+                 f"kinds={sorted(kinds)}")
+
+
+def case_monotonicity_requires_frozen_coverage() -> bool:
+    # 仅 armed 有空洞：不得在未冻结（有空洞/重叠）结论上做单调复核。
+    status, data = http_monotonicity({
+        "variables": ["armed"],
+        "rules": [rule("R1", "hold", "armed")],
+        "directions": {"armed": "high"},
+        "levels": {"hold": 1},
+    })
+    kinds = {e.get("kind") for e in data.get("errors", [])}
+    good = status == 422 and not data.get("ok") and "coverage_incomplete" in kinds
+    return check("验收：空洞/重叠未消除时拒绝单调复核（只接受冻结结论）", good,
+                 f"kinds={sorted(kinds)}")
+
+
+def case_monotonicity_3_64_pairs() -> bool:
+    variables = [f"v{i:02d}" for i in range(64)]
+    rules = [
+        {"id": "R1", "action": "hold", "condition": "!v00"},
+        {"id": "R2", "action": "alarm", "condition": "v00"},
+    ]
+    # 全 high：v00 决定等级，其余无关，单调通过；偏序对恰为 3^64。
+    status_pass, data_pass = http_monotonicity({
+        "variables": variables, "rules": rules,
+        "directions": {v: "high" for v in variables},
+        "levels": {"hold": 1, "alarm": 2},
+    })
+    # 倒置后：降级对恰为 3^63（v00 由假到真，其余 63 变量各自 3 种合法组合）。
+    status_fail, data_fail = http_monotonicity({
+        "variables": variables, "rules": rules,
+        "directions": {v: "high" for v in variables},
+        "levels": {"hold": 2, "alarm": 1},
+    })
+    good = (
+        status_pass == 200 and data_pass.get("monotonicity") == "PASS"
+        and data_pass.get("ordered_pairs") == 3 ** 64
+        and data_pass.get("violating_pairs") == 0
+        and status_fail == 200 and data_fail.get("monotonicity") == "FAIL"
+        and data_fail.get("violating_pairs") == 3 ** 63
+    )
+    return check("验收：3^64 偏序赋值对在共享 ROBDD 上精确检验（非枚举/抽样/相邻翻转）", good,
+                 f"pass_pairs={data_pass.get('ordered_pairs_text')} "
+                 f"fail_violating={data_fail.get('violating_pairs_text')}")
+
+
 def main() -> int:
     print(f"verify 开始：目标 {WEB_URL}", flush=True)
     all_ok = True
@@ -248,6 +377,11 @@ def main() -> int:
             case_variable_limit,
             case_rule_limit,
             case_exact_full_space,
+            case_monotonicity_pass,
+            case_monotonicity_counterexample,
+            case_monotonicity_config_errors,
+            case_monotonicity_requires_frozen_coverage,
+            case_monotonicity_3_64_pairs,
         ):
             try:
                 all_ok &= case()

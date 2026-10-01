@@ -1,9 +1,10 @@
 """HTTP 服务：审计页面、健康路径与审计 API。
 
 仅依赖 Python 标准库。路由：
-  GET  /           审计操作页面
-  GET  /health     健康路径
-  POST /api/audit  规则审计（请求体 {"variables": [...], "rules": [...]}）
+  GET  /                    审计操作页面
+  GET  /health              健康路径
+  POST /api/audit           空洞/重叠覆盖审计
+  POST /api/monotonicity    危险偏序单调性复核（危险方向 + 保护等级）
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import audit as audit_mod
+from . import monotonicity as mono_mod
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MAX_BODY = 1 << 20  # 1 MiB
@@ -53,7 +55,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
-        if path != "/api/audit":
+        if path not in ("/api/audit", "/api/monotonicity"):
             self._not_found()
             return
         try:
@@ -81,7 +83,15 @@ class Handler(BaseHTTPRequestHandler):
                 400,
             )
             return
-        result = audit_mod.audit(payload.get("variables", []), payload.get("rules", []))
+        if path == "/api/audit":
+            result = audit_mod.audit(payload.get("variables", []), payload.get("rules", []))
+        else:
+            result = mono_mod.monotonicity(
+                payload.get("variables", []),
+                payload.get("rules", []),
+                payload.get("directions", {}),
+                payload.get("levels", {}),
+            )
         self._send_json(result, 200 if result.get("ok") else 422)
 
     def log_message(self, fmt, *args):  # 保持容器日志简洁
