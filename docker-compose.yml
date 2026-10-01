@@ -1,0 +1,24 @@
+services:
+  web:
+    build: .
+    image: posture-audit:latest
+    ports:
+      # 宿主机端口可通过 WEB_PORT 环境变量配置，默认 8080
+      - "${WEB_PORT:-8080}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 5s
+
+  verify:
+    image: posture-audit:latest
+    build: .
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      WEB_URL: http://web:8000
+    command: ["python", "-m", "verify.verify"]
+    restart: "no"

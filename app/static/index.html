@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>姿态保护控制器 · 规则审计台</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font-family: "SF Mono", "Cascadia Code", Consolas, "Microsoft YaHei", monospace;
+         margin: 0; background: #0f1420; color: #dfe6f2; }
+  header { padding: 14px 22px; background: #16203a; border-bottom: 1px solid #2a3558;
+           display: flex; align-items: baseline; gap: 14px; }
+  header h1 { font-size: 17px; margin: 0; color: #8fd3ff; }
+  header span { font-size: 12px; color: #7f8db3; }
+  main { display: flex; gap: 18px; padding: 18px 22px; align-items: flex-start; flex-wrap: wrap; }
+  section { background: #151d31; border: 1px solid #263154; border-radius: 8px; padding: 16px; }
+  #editor { flex: 1 1 460px; min-width: 380px; }
+  #result-panel { flex: 1 1 460px; min-width: 380px; }
+  h2 { font-size: 13px; color: #9fb4e8; margin: 0 0 10px; letter-spacing: 1px; }
+  textarea { width: 100%; background: #0d1322; color: #cfe0ff; border: 1px solid #2a3558;
+             border-radius: 6px; padding: 8px; font: inherit; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border: 1px solid #263154; padding: 5px 7px; text-align: left; }
+  th { color: #8fa3d8; font-weight: normal; background: #10182b; }
+  input[type=text] { width: 100%; background: #0d1322; color: #cfe0ff; border: 1px solid #2a3558;
+                     border-radius: 4px; padding: 5px 6px; font: inherit; font-size: 13px; }
+  button { background: #23407a; color: #dce8ff; border: 1px solid #3a5da8; border-radius: 6px;
+           padding: 7px 14px; font: inherit; font-size: 13px; cursor: pointer; }
+  button:hover { background: #2c5099; }
+  button.ghost { background: transparent; border-color: #33406b; color: #8fa3d8; padding: 4px 9px; }
+  .row-actions { margin: 12px 0; display: flex; gap: 10px; flex-wrap: wrap; }
+  .verdict { font-size: 15px; font-weight: bold; padding: 8px 12px; border-radius: 6px; display: inline-block; }
+  .verdict.PASS { background: #123d24; color: #6fe3a1; border: 1px solid #1f6b3d; }
+  .verdict.FAIL { background: #471c1c; color: #ff9a9a; border: 1px solid #7a2c2c; }
+  .errors { background: #3a1720; border: 1px solid #6b2434; border-radius: 6px; padding: 10px 12px; }
+  .errors li { margin: 4px 0; color: #ffb3c0; font-size: 13px; }
+  .kind { color: #ff8299; }
+  .conclusion { white-space: pre-wrap; background: #10182b; border-radius: 6px; padding: 10px 12px;
+                font-size: 13px; color: #b9c8ee; margin-top: 10px; }
+  .frozen-note { font-size: 12px; color: #6f7ea8; margin-top: 10px; }
+  .cleared { color: #e8c06a; }
+  .empty { color: #5d6c96; font-size: 13px; }
+  code { color: #8fd3ff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>姿态保护控制器 · 规则审计台</h1>
+  <span>至多 64 个变量 / 96 条规则 · 按变量标识 ASCII 顺序对全赋值空间精确裁决空洞与重叠</span>
+</header>
+<main>
+  <section id="editor">
+    <h2>一、稳定变量（每行一个，或空白/逗号分隔）</h2>
+    <textarea id="variables" rows="4" placeholder="armed&#10;safe"></textarea>
+    <h2 style="margin-top:14px">二、保护规则（条件支持 ! 非、&amp; 与、| 或、括号）</h2>
+    <table id="rules-table">
+      <thead><tr><th style="width:22%">标识</th><th style="width:24%">动作</th><th>条件</th><th style="width:8%"></th></tr></thead>
+      <tbody id="rules-body"></tbody>
+    </table>
+    <div class="row-actions">
+      <button class="ghost" id="add-rule" type="button">＋ 添加规则</button>
+      <button class="ghost" id="ex-safe" type="button">示例：safe / !safe</button>
+      <button class="ghost" id="ex-armed" type="button">示例：仅 armed</button>
+      <button class="ghost" id="ex-overlap" type="button">示例：动作重叠</button>
+    </div>
+    <div class="row-actions">
+      <button id="submit" type="button">提交审计（冻结结论）</button>
+    </div>
+    <div class="frozen-note" id="freeze-note">提交后结论冻结；修改任一草稿即清除旧证据。</div>
+  </section>
+  <section id="result-panel">
+    <h2>三、审计结论</h2>
+    <div id="result"><span class="empty">尚未提交审计。</span></div>
+  </section>
+</main>
+<script>
+"use strict";
+const rulesBody = document.getElementById("rules-body");
+const resultBox = document.getElementById("result");
+const freezeNote = document.getElementById("freeze-note");
+let frozen = false;
+
+function addRule(id, action, condition) {
+  const tr = document.createElement("tr");
+  tr.innerHTML =
+    '<td><input type="text" class="r-id" placeholder="R1"></td>' +
+    '<td><input type="text" class="r-action" placeholder="hold"></td>' +
+    '<td><input type="text" class="r-cond" placeholder="safe &amp; !armed"></td>' +
+    '<td><button type="button" class="ghost r-del">删</button></td>';
+  tr.querySelector(".r-id").value = id || "";
+  tr.querySelector(".r-action").value = action || "";
+  tr.querySelector(".r-cond").value = condition || "";
+  tr.querySelector(".r-del").addEventListener("click", () => { tr.remove(); draftChanged(); });
+  rulesBody.appendChild(tr);
+}
+
+function draftChanged() {
+  if (frozen) {
+    resultBox.innerHTML = '<span class="empty cleared">草稿已修改，旧审计证据已清除。</span>';
+    frozen = false;
+  }
+}
+
+document.getElementById("editor").addEventListener("input", draftChanged);
+document.getElementById("add-rule").addEventListener("click", () => { addRule(); draftChanged(); });
+
+function loadExample(vars, rules) {
+  document.getElementById("variables").value = vars.join("\n");
+  rulesBody.innerHTML = "";
+  rules.forEach(r => addRule(r[0], r[1], r[2]));
+  draftChanged();
+}
+document.getElementById("ex-safe").addEventListener("click", () =>
+  loadExample(["safe"], [["R1", "hold", "safe"], ["R2", "alarm", "!safe"]]));
+document.getElementById("ex-armed").addEventListener("click", () =>
+  loadExample(["armed"], [["R1", "hold", "armed"]]));
+document.getElementById("ex-overlap").addEventListener("click", () =>
+  loadExample(["armed", "safe"],
+    [["R2", "alarm", "safe"], ["R1", "hold", "safe | armed"], ["R3", "hold", "!safe & !armed"]]));
+
+function parseVariables() {
+  return document.getElementById("variables").value.split(/[\s,]+/).filter(Boolean);
+}
+function parseRules() {
+  return [...rulesBody.querySelectorAll("tr")].map(tr => ({
+    id: tr.querySelector(".r-id").value.trim(),
+    action: tr.querySelector(".r-action").value.trim(),
+    condition: tr.querySelector(".r-cond").value.trim()
+  }));
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function fmtAssign(a) {
+  if (!a) return "—";
+  return Object.entries(a).map(([k, v]) => `<code>${esc(k)}=${v}</code>`).join(", ");
+}
+
+function render(data) {
+  frozen = true;
+  if (!data.ok) {
+    const items = data.errors.map(e =>
+      `<li><span class="kind">[${esc(e.kind)}]</span> ${esc(e.rule ? "规则 " + e.rule + "：" : "")}${esc(e.message)}</li>`
+    ).join("");
+    resultBox.innerHTML = `<div class="errors"><b>录入非法（共 ${data.errors.length} 处，一次定位）：</b><ul>${items}</ul></div>`;
+    return;
+  }
+  const holes = data.holes, ov = data.overlaps;
+  const ruleRows = data.rules.map(r =>
+    `<tr><td>${esc(r.id)}</td><td>${esc(r.action)}</td><td>${r.uses.map(u => `<code>${esc(u)}</code>`).join(", ") || "—"}</td>` +
+    `<td>${r.nodes}</td><td>${r.root}</td></tr>`).join("");
+  resultBox.innerHTML =
+    `<span class="verdict ${data.verdict}">${data.verdict === "PASS" ? "✔ 通过" : "✘ 未通过"}</span>` +
+    `<div class="conclusion">${esc(data.conclusion)}</div>` +
+    `<h2 style="margin-top:14px">空洞（未命中任何规则的赋值）</h2>` +
+    `<table><tr><th>精确个数</th><th>首个空洞（ASCII 变量序，假先于真）</th></tr>` +
+    `<tr><td>${holes.count_text}</td><td>${fmtAssign(holes.first)}</td></tr></table>` +
+    `<h2 style="margin-top:14px">重叠（多动作同时命中）</h2>` +
+    `<table><tr><th>精确个数</th><th>首个赋值</th><th>命中规则（按标识排序）</th></tr>` +
+    `<tr><td>${ov.count_text}</td><td>${fmtAssign(ov.first)}</td><td>${ov.rules.map(esc).join(", ") || "—"}</td></tr></table>` +
+    `<h2 style="margin-top:14px">各规则规范节点摘要（ASCII 变量序 ROBDD）</h2>` +
+    `<table><tr><th>标识</th><th>动作</th><th>引用变量</th><th>规范节点数</th><th>根节点号</th></tr>${ruleRows}</table>` +
+    `<div class="frozen-note">变量顺序：${data.variable_order.map(v => `<code>${esc(v)}</code>`).join(" &lt; ")} · 赋值空间 2^${data.variable_order.length} = ${data.space_text}</div>`;
+}
+
+document.getElementById("submit").addEventListener("click", async () => {
+  resultBox.innerHTML = '<span class="empty">裁决中…</span>';
+  try {
+    const resp = await fetch("/api/audit", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({variables: parseVariables(), rules: parseRules()})
+    });
+    render(await resp.json());
+  } catch (err) {
+    resultBox.innerHTML = `<div class="errors">请求失败：${esc(err.message)}</div>`;
+  }
+});
+
+addRule();
+</script>
+</body>
+</html>
