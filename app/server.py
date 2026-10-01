@@ -81,7 +81,12 @@ class Handler(BaseHTTPRequestHandler):
                 400,
             )
             return
-        result = audit_mod.audit(payload.get("variables", []), payload.get("rules", []))
+        result = audit_mod.audit(
+            payload.get("variables", []),
+            payload.get("rules", []),
+            payload.get("danger"),
+            payload.get("levels"),
+        )
         self._send_json(result, 200 if result.get("ok") else 422)
 
     def log_message(self, fmt, *args):  # 保持容器日志简洁

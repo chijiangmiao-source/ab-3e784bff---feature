@@ -62,16 +62,63 @@ class ApiTest(unittest.TestCase):
                     {"id": "R1", "action": "hold", "condition": "safe"},
                     {"id": "R2", "action": "alarm", "condition": "!safe"},
                 ],
+                "danger": {"safe": "false"},
+                "levels": {"hold": 1, "alarm": 2},
             },
         )
         self.assertEqual(status, 200)
         self.assertTrue(data["ok"])
         self.assertEqual(data["verdict"], "PASS")
+        self.assertEqual(data["monotonicity"]["verdict"], "PASS")
+
+    def test_audit_missing_danger_or_levels_is_422(self):
+        status, data = self.post(
+            "/api/audit",
+            {
+                "variables": ["safe"],
+                "rules": [
+                    {"id": "R1", "action": "hold", "condition": "safe"},
+                    {"id": "R2", "action": "alarm", "condition": "!safe"},
+                ],
+            },
+        )
+        self.assertEqual(status, 422)
+        self.assertFalse(data["ok"])
+        kinds = {e["kind"] for e in data["errors"]}
+        self.assertIn("missing_danger_direction", kinds)
+        self.assertIn("missing_action_level", kinds)
+
+    def test_audit_monotonicity_counterexample(self):
+        status, data = self.post(
+            "/api/audit",
+            {
+                "variables": ["armed", "tilt"],
+                "rules": [
+                    {"id": "R1", "action": "hold", "condition": "!armed"},
+                    {"id": "R2", "action": "arm", "condition": "armed & !tilt"},
+                    {"id": "R3", "action": "emer", "condition": "armed & tilt"},
+                ],
+                "danger": {"armed": "true", "tilt": "true"},
+                "levels": {"hold": 3, "arm": 2, "emer": 1},
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["verdict"], "FAIL")
+        ce = data["monotonicity"]["counterexample"]
+        self.assertEqual(ce["less_dangerous"]["assignment"], {"armed": False, "tilt": False})
+        self.assertEqual(ce["less_dangerous"]["actions"], ["hold"])
+        self.assertEqual(ce["more_dangerous"]["assignment"], {"armed": True, "tilt": False})
+        self.assertEqual(ce["more_dangerous"]["actions"], ["arm"])
 
     def test_audit_validation_failure_is_422(self):
         status, data = self.post(
             "/api/audit",
-            {"variables": ["a"], "rules": [{"id": "R1", "action": "x", "condition": "b"}]},
+            {
+                "variables": ["a"],
+                "rules": [{"id": "R1", "action": "x", "condition": "b"}],
+                "danger": {"a": "true"},
+                "levels": {"x": 1},
+            },
         )
         self.assertEqual(status, 422)
         self.assertFalse(data["ok"])
